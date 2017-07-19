@@ -439,4 +439,12 @@ config OLD_SIGACTION
 config COMPAT_OLD_SIGACTION
 	bool
 
+config SCM
+    bool"hybrid memory with dram and scm"
+    default y
+
+config SCM_DEBUG
+    bool"scm_debug"
+    default y
+
 source "kernel/gcov/Kconfig"
