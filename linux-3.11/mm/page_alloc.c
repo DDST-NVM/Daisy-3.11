@@ -1876,6 +1876,10 @@ zonelist_scan:
 		if ((alloc_flags & ALLOC_CPUSET) &&
 			!cpuset_zone_allowed_softwall(zone, gfp_mask))
 				continue;
+		if(gfp_mask & __GFP_SCM) {
+            daisy_printk("Call this if and goto try_this_zone.\n");
+			goto try_this_zone;
+		}
 		/*
 		 * When allocating a page cache page for writing, we
 		 * want to get it from a zone that is within its dirty
@@ -2606,6 +2610,9 @@ struct page *
 __alloc_pages_nodemask(gfp_t gfp_mask, unsigned int order,
 			struct zonelist *zonelist, nodemask_t *nodemask)
 {
+    if (gfp_mask & GFP_SCM) {
+        daisy_printk("Enter nodemask() func.\n");
+    }
 	enum zone_type high_zoneidx = gfp_zone(gfp_mask);
 	struct zone *preferred_zone;
 	struct page *page = NULL;

@@ -651,7 +651,10 @@ SYSCALL_DEFINE2(p_alloc_and_insert, unsigned long, id, unsigned long, size) {
 SYSCALL_DEFINE2(p_get_small_region, unsigned long, id, unsigned long, size) {
 
 	// get id from inode
-	struct hptable_node *pHpNode = search_heap_region_node(id);
+    // code for syscall check in kernel 3.11
+    printk(KERN_ALERT "This syscall is running in Linux 3.11.\n");
+	
+    struct hptable_node *pHpNode = search_heap_region_node(id);
 	int iRet = 0;
 	if (pHpNode != NULL) {
 		daisy_printk("find heap region per program\n");
