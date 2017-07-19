@@ -841,6 +841,7 @@ static void __init trim_low_memory_range(void)
 
 void __init setup_arch(char **cmdline_p)
 {
+    daisy_printk("%s %s\n",__FILE__,__func__);
 	memblock_reserve(__pa_symbol(_text),
 			 (unsigned long)__bss_stop - (unsigned long)_text);
 

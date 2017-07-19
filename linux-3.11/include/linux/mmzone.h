@@ -304,6 +304,9 @@ enum zone_type {
 	 */
 	ZONE_HIGHMEM,
 #endif
+#ifdef CONFIG_SCM
+	ZONE_SCM,
+#endif
 	ZONE_MOVABLE,
 	__MAX_NR_ZONES
 };
@@ -798,6 +801,7 @@ static inline bool pgdat_is_empty(pg_data_t *pgdat)
 
 extern struct mutex zonelists_mutex;
 void build_all_zonelists(pg_data_t *pgdat, struct zone *zone);
+void print_all_pgdat(void);
 void wakeup_kswapd(struct zone *zone, int order, enum zone_type classzone_idx);
 bool zone_watermark_ok(struct zone *z, int order, unsigned long mark,
 		int classzone_idx, int alloc_flags);

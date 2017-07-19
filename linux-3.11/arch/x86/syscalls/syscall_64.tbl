@@ -321,6 +321,14 @@
 312	common	kcmp			sys_kcmp
 313	common	finit_module		sys_finit_module
 
+322 64 		p_mmap 		sys_p_mmap
+323 64 		p_search_big_region_node		sys_p_search_big_region_node
+324 64		p_alloc_and_insert				sys_p_alloc_and_insert
+325 64		p_get_small_region				sys_p_get_small_region
+326 64      p_bind                          sys_p_bind
+327 64 		p_search_small_region_node		sys_p_search_small_region_node
+328 64 		p_delete_big_region_node		sys_p_delete_big_region_node
+
 #
 # x32-specific system call numbers start at 512 to avoid cache impact
 # for native 64-bit operation.

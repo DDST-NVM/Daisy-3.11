@@ -4,6 +4,7 @@
 #include <linux/swap.h>
 #include <linux/memblock.h>
 #include <linux/bootmem.h>	/* for max_low_pfn */
+#include <linux/scm.h>
 
 #include <asm/cacheflush.h>
 #include <asm/e820.h>
@@ -42,6 +43,8 @@ __ref void *alloc_low_pages(unsigned int num)
 	unsigned long pfn;
 	int i;
 
+    daisy_printk("%s %s\n",__FILE__, __func__);
+
 	if (after_bootmem) {
 		unsigned int order;
 
@@ -57,6 +60,7 @@ __ref void *alloc_low_pages(unsigned int num)
 		ret = memblock_find_in_range(min_pfn_mapped << PAGE_SHIFT,
 					max_pfn_mapped << PAGE_SHIFT,
 					PAGE_SIZE * num , PAGE_SIZE);
+        daisy_printk("ret: %lu\n", ret);
 		if (!ret)
 			panic("alloc_low_page: can not alloc memory");
 		memblock_reserve(ret, PAGE_SIZE * num);
@@ -317,6 +321,7 @@ static void add_pfn_range_mapped(unsigned long start_pfn, unsigned long end_pfn)
 	if (start_pfn < (1UL<<(32-PAGE_SHIFT)))
 		max_low_pfn_mapped = max(max_low_pfn_mapped,
 					 min(end_pfn, 1UL<<(32-PAGE_SHIFT)));
+    daisy_printk("%s %s max_pfn_mapped %lu\n", __FILE__, __func__, max_pfn_mapped);
 }
 
 bool pfn_range_is_mapped(unsigned long start_pfn, unsigned long end_pfn)
@@ -342,6 +347,9 @@ unsigned long __init_refok init_memory_mapping(unsigned long start,
 	struct map_range mr[NR_RANGE_MR];
 	unsigned long ret = 0;
 	int nr_range, i;
+
+    daisy_printk("%s %s start end %lu %lu\n",__FILE__, __func__, start, end);
+
 
 	pr_info("init_memory_mapping: [mem %#010lx-%#010lx]\n",
 	       start, end - 1);
@@ -379,6 +387,8 @@ static unsigned long __init init_range_memory_mapping(
 	unsigned long mapped_ram_size = 0;
 	int i;
 
+    daisy_printk("%s %s\n",__FILE__, __func__);
+
 	for_each_mem_pfn_range(i, MAX_NUMNODES, &start_pfn, &end_pfn, NULL) {
 		u64 start = clamp_val(PFN_PHYS(start_pfn), r_start, r_end);
 		u64 end = clamp_val(PFN_PHYS(end_pfn), r_start, r_end);
@@ -408,6 +418,8 @@ void __init init_mem_mapping(void)
 	unsigned long addr;
 	unsigned long mapped_ram_size = 0;
 	unsigned long new_mapped_ram_size;
+
+    daisy_printk("%s %s\n",__FILE__, __func__);
 
 	probe_page_size_mask();
 
@@ -566,6 +578,11 @@ void __init zone_sizes_init(void)
 {
 	unsigned long max_zone_pfns[MAX_NR_ZONES];
 
+    int i;
+    daisy_printk("%s %s\n",__FILE__, __func__);
+    daisy_printk("%lu %lu %lu\n", max_low_pfn, max_pfn, SCM_PFN_NUM);
+
+
 	memset(max_zone_pfns, 0, sizeof(max_zone_pfns));
 
 #ifdef CONFIG_ZONE_DMA
@@ -578,6 +595,14 @@ void __init zone_sizes_init(void)
 #ifdef CONFIG_HIGHMEM
 	max_zone_pfns[ZONE_HIGHMEM]	= max_pfn;
 #endif
+
+#ifdef CONFIG_SCM
+    max_zone_pfns[ZONE_SCM] = max_low_pfn;
+#endif
+	/*print max_zone_pfns*/
+	for(i=0; i<MAX_NR_ZONES; ++i) {
+		daisy_printk("max_zone_pfns %d: %lu\n", i, max_zone_pfns[i]);
+	}
 
 	free_area_init_nodes(max_zone_pfns);
 }
