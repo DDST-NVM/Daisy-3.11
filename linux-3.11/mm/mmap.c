@@ -3226,6 +3226,290 @@ static int reserve_mem_notifier(struct notifier_block *nb,
 	return NOTIFY_OK;
 }
 
+unsigned long mmap_region2(struct file *file, unsigned long addr,
+		unsigned long len, vm_flags_t vm_flags, unsigned long pgoff, unsigned long scm_id)
+{
+	struct mm_struct *mm = current->mm;
+	struct vm_area_struct *vma, *prev;
+	int error;
+	struct rb_node **rb_link, *rb_parent;
+	unsigned long charged = 0;
+
+	/* Check against address space limit. */
+	if (!may_expand_vm(mm, len >> PAGE_SHIFT)) {
+		unsigned long nr_pages;
+
+		/*
+		 * MAP_FIXED may remove pages of mappings that intersects with
+		 * requested mapping. Account for the pages it would unmap.
+		 */
+		if (!(vm_flags & MAP_FIXED))
+			return -ENOMEM;
+
+		nr_pages = count_vma_pages_range(mm, addr, addr + len);
+
+		if (!may_expand_vm(mm, (len >> PAGE_SHIFT) - nr_pages))
+			return -ENOMEM;
+	}
+
+	/* Clear old maps */
+	error = -ENOMEM;
+munmap_back:
+	if (find_vma_links(mm, addr, addr + len, &prev, &rb_link, &rb_parent)) {
+		if (do_munmap(mm, addr, len))
+			return -ENOMEM;
+		goto munmap_back;
+	}
+
+	/*
+	 * Private writable mapping: check memory availability
+	 */
+	if (accountable_mapping(file, vm_flags)) {
+		charged = len >> PAGE_SHIFT;
+		if (security_vm_enough_memory_mm(mm, charged))
+			return -ENOMEM;
+		vm_flags |= VM_ACCOUNT;
+	}
+
+	/*
+	 * Can we just expand an old mapping?
+	 */
+	if (!(vm_flags & VM_PCM)) {
+		vma = vma_merge(mm, prev, addr, addr + len, vm_flags, NULL, file, pgoff, NULL);
+		if (vma)
+			goto out;
+	}
+	/*
+	 * Determine the object being mapped and call the appropriate
+	 * specific mapper. the address has already been validated, but
+	 * not unmapped, but the maps are removed from the list.
+	 */
+	vma = kmem_cache_zalloc(vm_area_cachep, GFP_KERNEL);
+	if (!vma) {
+		error = -ENOMEM;
+		goto unacct_error;
+	}
+
+	vma->vm_mm = mm;
+	vma->vm_start = addr;
+	vma->vm_end = addr + len;
+	vma->vm_flags = vm_flags;
+	vma->vm_page_prot = vm_get_page_prot(vm_flags);
+	vma->vm_pgoff = pgoff;
+    /* set the scm_id for do_fault function to retrieve the memory region */
+	vma->scm_id = scm_id;
+	INIT_LIST_HEAD(&vma->anon_vma_chain);
+
+	if (file) {
+		if (vm_flags & VM_DENYWRITE) {
+			error = deny_write_access(file);
+			if (error)
+				goto free_vma;
+		}
+		vma->vm_file = get_file(file);
+		error = file->f_op->mmap(file, vma);
+		if (error)
+			goto unmap_and_free_vma;
+
+		/* Can addr have changed??
+		 *
+		 * Answer: Yes, several device drivers can do it in their
+		 *         f_op->mmap method. -DaveM
+		 * Bug: If addr is changed, prev, rb_link, rb_parent should
+		 *      be updated for vma_link()
+		 */
+		WARN_ON_ONCE(addr != vma->vm_start);
+
+		addr = vma->vm_start;
+		vm_flags = vma->vm_flags;
+	} else if (vm_flags & VM_SHARED) {
+		error = shmem_zero_setup(vma);
+		if (error)
+			goto free_vma;
+	}
+
+	if (vma_wants_writenotify(vma)) {
+		pgprot_t pprot = vma->vm_page_prot;
+
+		/* Can vma->vm_page_prot have changed??
+		 *
+		 * Answer: Yes, drivers may have changed it in their
+		 *         f_op->mmap method.
+		 *
+		 * Ensures that vmas marked as uncached stay that way.
+		 */
+		vma->vm_page_prot = vm_get_page_prot(vm_flags & ~VM_SHARED);
+		if (pgprot_val(pprot) == pgprot_val(pgprot_noncached(pprot)))
+			vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
+	}
+
+	vma_link(mm, vma, prev, rb_link, rb_parent);
+	/* Once vma denies write, undo our temporary denial count */
+	if (vm_flags & VM_DENYWRITE)
+		allow_write_access(file);
+	file = vma->vm_file;
+out:
+	perf_event_mmap(vma);
+
+	vm_stat_account(mm, vm_flags, file, len >> PAGE_SHIFT);
+	if (vm_flags & VM_LOCKED) {
+		if (!((vm_flags & VM_SPECIAL) || is_vm_hugetlb_page(vma) ||
+					vma == get_gate_vma(current->mm)))
+			mm->locked_vm += (len >> PAGE_SHIFT);
+		else
+			vma->vm_flags &= ~VM_LOCKED;
+	}
+
+	if (file)
+		uprobe_mmap(vma);
+
+	/*
+	 * New (or expanded) vma always get soft dirty status.
+	 * Otherwise user-space soft-dirty page tracker won't
+	 * be able to distinguish situation when vma area unmapped,
+	 * then new mapped in-place (which must be aimed as
+	 * a completely new data area).
+	 */
+	vma->vm_flags |= VM_SOFTDIRTY;
+
+	return addr;
+
+unmap_and_free_vma:
+	if (vm_flags & VM_DENYWRITE)
+		allow_write_access(file);
+	vma->vm_file = NULL;
+	fput(file);
+
+	/* Undo any partial mapping done by a device driver. */
+	unmap_region(mm, vma, prev, vma->vm_start, vma->vm_end);
+	charged = 0;
+free_vma:
+	kmem_cache_free(vm_area_cachep, vma);
+unacct_error:
+	if (charged)
+		vm_unacct_memory(charged);
+	return error;
+}
+
+
+unsigned long do_p_mmap_pgoff(unsigned long addr,
+			unsigned long len, unsigned long prot,
+			unsigned long flags, unsigned long pgoff,unsigned long* populate, unsigned long scm_id)
+{
+	struct mm_struct *mm = current->mm;
+	vm_flags_t vm_flags;
+
+	/*
+	 * Does the application expect PROT_READ to imply PROT_EXEC?
+	 *
+	 * (the exception is when the underlying filesystem is noexec
+	 *  mounted, in which case we dont add PROT_EXEC.)
+	 */
+	if ((prot & PROT_READ) && (current->personality & READ_IMPLIES_EXEC))
+			prot |= PROT_EXEC;
+
+	if (!len)
+		return -EINVAL;
+
+	if (!(flags & MAP_FIXED))
+		addr = round_hint_to_min(addr);
+
+	/* Careful about overflows.. */
+	len = PAGE_ALIGN(len);
+	if (!len)
+		return -ENOMEM;
+
+	/* offset overflow? */
+	if ((pgoff + (len >> PAGE_SHIFT)) < pgoff)
+		return -EOVERFLOW;
+
+	/* Too many mappings? */
+	if (mm->map_count > sysctl_max_map_count)
+		return -ENOMEM;
+
+	/* Obtain the address to map to. we verify (or select) it and ensure
+	 * that it represents a valid section of the address space.
+	 */
+	addr = get_unmapped_area(NULL, addr, len, pgoff, flags);
+	if (addr & ~PAGE_MASK)
+		return addr;
+
+	/* Do simple checking here so the lower-level routines won't have
+	 * to. we assume access permissions have been handled by the open
+	 * of the memory object, so we don't do any here.
+	 */
+	vm_flags = calc_vm_prot_bits(prot) | calc_vm_flag_bits(flags) |
+			mm->def_flags | VM_MAYREAD | VM_MAYWRITE | VM_MAYEXEC | VM_PCM | VM_LOCKED | VM_SHARED;
+
+	if (flags & MAP_LOCKED)
+		if (!can_do_mlock())
+			return -EPERM;
+
+	/* mlock MCL_FUTURE? */
+	/*if (vm_flags & VM_LOCKED) {
+		unsigned long locked, lock_limit;
+		locked = len >> PAGE_SHIFT;
+		locked += mm->locked_vm;
+		lock_limit = rlimit(RLIMIT_MEMLOCK);
+		lock_limit >>= PAGE_SHIFT;
+		if (locked > lock_limit && !capable(CAP_IPC_LOCK))
+			return -EAGAIN;
+	}*/
+
+
+	switch (flags & MAP_TYPE) {
+	case MAP_SHARED:
+		if (vm_flags & (VM_GROWSDOWN | VM_GROWSUP))
+			return -EINVAL;
+		/*
+		 * Ignore pgoff.
+		 */
+		pgoff = 0;
+		vm_flags |= VM_SHARED | VM_MAYSHARE;
+		break;
+	case MAP_PRIVATE:
+		/*
+		 * Set pgoff according to addr for anon_vma.
+		 */
+		pgoff = addr >> PAGE_SHIFT;
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	/*
+	 * Set 'VM_NORESERVE' if we should not account for the
+	 * memory use of this mapping.
+	 */
+	if (flags & MAP_NORESERVE) {
+		/* We honor MAP_NORESERVE if allowed to overcommit */
+		if (sysctl_overcommit_memory != OVERCOMMIT_NEVER)
+			vm_flags |= VM_NORESERVE;
+	}
+
+	addr = mmap_region2(NULL, addr, len, vm_flags, pgoff, scm_id);
+	*populate=len;
+	return addr;
+}
+
+
+SYSCALL_DEFINE4(p_mmap, unsigned long, addr, unsigned long, len,
+		unsigned long, prot, unsigned long, id)
+{
+	unsigned int flags = MAP_ANONYMOUS | MAP_SHARED;
+	unsigned long retval = -EBADF;
+	struct mm_struct *mm = current->mm;
+	unsigned long populate;
+	printk("p_map : 0x%lx , %ld , 0x%lx ,%ld\n",addr,len,prot,id);
+
+	down_write(&mm->mmap_sem);
+	retval = do_p_mmap_pgoff(addr, len, prot, flags, 0, &populate, id);
+	up_write(&mm->mmap_sem);
+	mm_populate(retval, populate);
+
+	return retval;
+}
+
 static struct notifier_block reserve_mem_nb = {
 	.notifier_call = reserve_mem_notifier,
 };

@@ -693,8 +693,26 @@ __SYSCALL(__NR_kcmp, sys_kcmp)
 #define __NR_finit_module 273
 __SYSCALL(__NR_finit_module, sys_finit_module)
 
+
+/*PCM system calls are defined here*/
+#define __NR_p_mmap 322
+__SYSCALL(__NR_p_mmap, sys_p_mmap)
+#define __NR_p_search_big_region_node 323
+__SYSCALL(__NR_p_search_big_region_node, sys_p_search_big_region_node)
+#define __NR_p_alloc_and_insert 324
+__SYSCALL(__NR_p_alloc_and_insert, sys_p_alloc_and_insert)
+#define __NR_p_get_small_region 325
+__SYSCALL(__NR_p_get_small_region, sys_p_get_small_region)
+#define __NR_p_bind 326
+__SYSCALL(__NR_p_bind, sys_p_bind)
+#define __NR_p_search_small_region_node 327
+__SYSCALL(__NR_p_search_small_region_node, sys_p_search_small_region_node)
+#define __NR_p_search_small_region_node 328
+__SYSCALL(__NR_p_delete_big_region_node, sys_p_delete_big_region_node)
+
 #undef __NR_syscalls
-#define __NR_syscalls 274
+//#define __NR_syscalls 274
+#define __NR_syscalls 281
 
 /*
  * All syscalls below here should go away really,

@@ -59,6 +59,7 @@
 #include <linux/gfp.h>
 #include <linux/migrate.h>
 #include <linux/string.h>
+#include <linux/scm.h>
 
 #include <asm/io.h>
 #include <asm/pgalloc.h>
@@ -3338,7 +3339,32 @@ static int __do_fault(struct mm_struct *mm, struct vm_area_struct *vma,
 	vmf.flags = flags;
 	vmf.page = NULL;
 
-	ret = vma->vm_ops->fault(vma, &vmf);
+
+    /*
+    * find the page when VM_PCM is set in vma->vm_flags
+    */
+	if (vma->vm_flags & VM_PCM) {
+		daisy_printk("===== scm_id in vma = %d\n", vma->scm_id);
+		struct ptable_node *p_node = search_big_region_node(vma->scm_id);
+		if (!p_node)
+			p_node = search_small_region_node(vma->scm_id);
+		if (!p_node)
+			p_node = search_heap_region_node(vma->scm_id);
+		if (!p_node) {
+			daisy_printk("===== fatal error: p_node is null");
+			ret=VM_FAULT_NOPAGE;
+		}
+
+		vmf.page = (pfn_to_page(p_node->phys_addr >> PAGE_SHIFT)+pgoff);
+		daisy_printk("allocated page: pfn %p offset=%d\n",
+				PFN_PHYS(page_to_pfn(vmf.page)),pgoff);
+		atomic_set(&vmf.page->_mapcount,0);
+		ret=0;
+	} else {
+		ret = vma->vm_ops->fault(vma, &vmf);
+	}
+
+	//ret = vma->vm_ops->fault(vma, &vmf);
 	if (unlikely(ret & (VM_FAULT_ERROR | VM_FAULT_NOPAGE |
 			    VM_FAULT_RETRY)))
 		goto uncharge_out;
@@ -3780,6 +3806,11 @@ int handle_mm_fault(struct mm_struct *mm, struct vm_area_struct *vma,
 
 	/* do counter updates before entering really critical section. */
 	check_sync_rss_stat(current);
+
+
+	if(vma->vm_flags & VM_PCM)
+		printk("PCM!!!!!!!\n");
+
 
 	if (unlikely(is_vm_hugetlb_page(vma)))
 		return hugetlb_fault(mm, vma, address, flags);
