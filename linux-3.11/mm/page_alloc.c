@@ -184,6 +184,9 @@ int sysctl_lowmem_reserve_ratio[MAX_NR_ZONES-1] = {
 #ifdef CONFIG_HIGHMEM
 	 32,
 #endif
+#ifdef CONFIG_SCM
+	 32,
+#endif
 	 32,
 };
 
@@ -199,6 +202,9 @@ static char * const zone_names[MAX_NR_ZONES] = {
 	 "Normal",
 #ifdef CONFIG_HIGHMEM
 	 "HighMem",
+#endif
+#ifdef CONFIG_SCM
+	 "Scm",
 #endif
 	 "Movable",
 };
@@ -3156,18 +3162,28 @@ static void zoneref_set_zone(struct zone *zone, struct zoneref *zoneref)
 static int build_zonelists_node(pg_data_t *pgdat, struct zonelist *zonelist,
 				int nr_zones)
 {
-	struct zone *zone;
+	struct zone *zone, *scm_zone = NULL;
 	enum zone_type zone_type = MAX_NR_ZONES;
+
+	daisy_printk("build_zonelists_node pgdat->node_id: %d, nr_zones: %d\n", pgdat->node_id, pgdat->nr_zones);
+	/*do a trick here, to let SCM zone to be special*/
 
 	do {
 		zone_type--;
 		zone = pgdat->node_zones + zone_type;
-		if (populated_zone(zone)) {
+		daisy_printk("zone->present_pages: %s %lu\n", zone->name, zone->present_pages);
+	//	if (populated_zone(zone)) {
+		if (zone_type == ZONE_SCM) {
+			scm_zone = zone;
+		} else if (populated_zone(zone) && zone_type != ZONE_SCM) {
 			zoneref_set_zone(zone,
 				&zonelist->_zonerefs[nr_zones++]);
 			check_highest_zone(zone_type);
 		}
 	} while (zone_type);
+	if (scm_zone) {
+		zoneref_set_zone(scm_zone, &zonelist->_zonerefs[nr_zones++]);
+	}
 
 	return nr_zones;
 }
@@ -3359,9 +3375,12 @@ static void build_zonelists_in_node_order(pg_data_t *pgdat, int node)
 	int j;
 	struct zonelist *zonelist;
 
+    daisy_printk("build zonelists_in_node_order\n");
+
 	zonelist = &pgdat->node_zonelists[0];
 	for (j = 0; zonelist->_zonerefs[j].zone != NULL; j++)
 		;
+	daisy_printk("build_zonelists_in_node_order j: %d\n", j);
 	j = build_zonelists_node(NODE_DATA(node), zonelist, j);
 	zonelist->_zonerefs[j].zone = NULL;
 	zonelist->_zonerefs[j].zone_idx = 0;
@@ -3482,6 +3501,40 @@ static void set_zonelist_order(void)
 		current_zonelist_order = default_zonelist_order();
 	else
 		current_zonelist_order = user_zonelist_order;
+}
+
+
+static void print_pgdat(pg_data_t *pgdat)
+{
+	struct zone *z;
+	int i, j;
+
+	daisy_printk("%s %s\n", __FILE__, __func__);
+	/*print node_zones*/
+	for (i=0; i<MAX_NR_ZONES; ++i) {
+		daisy_printk("%s ", pgdat->node_zones[i].name);
+	}
+	daisy_printk("...\n");
+	/*print node_zonelists*/
+	for (i=0; i<MAX_ZONELISTS; ++i) {
+		for (j=0; j<(MAX_ZONES_PER_ZONELIST+1); ++j) {
+			z = pgdat->node_zonelists[i]._zonerefs[j].zone;
+			if (z == NULL) {
+				break;
+			}
+			daisy_printk("zone->managed_pages: %s %lu\n", z->name, z->managed_pages);
+		}
+		daisy_printk("...\n");
+	}
+}
+
+void print_all_pgdat(void)
+{
+	int nid;
+	for_each_online_node(nid) {
+		pg_data_t *pgdat = NODE_DATA(nid);
+		print_pgdat(pgdat);
+	}
 }
 
 static void build_zonelists(pg_data_t *pgdat)
