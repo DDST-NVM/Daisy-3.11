@@ -34,7 +34,7 @@ static int p_bind_(unsigned long id, unsigned long offset, unsigned long size, u
 }
 
 
-#define HPID    234567
+#define HPID    12345
 /*
 int p_init() {
     key_t key;
@@ -70,39 +70,33 @@ int p_init(int size) {
     if (pBaseAddr != NULL) {
         return -1;
     }
-
     if (size < 0) {
         return -1;
     }
 
     SHM_SIZE = size;
-    iBitsCount = (SHM_SIZE)/(1 + BITMAPGRAN*8) * 8;
-    /*
-    这个函数将获得该程序的inode，拼接出id，然后查找table；如果发现了，则直接映射上来，
-    否则，分配一块大的区域，清0，然后映射上来
-    */
-    iRet = p_get_small_region(HPID,size);
+
+    iRet = p_get_small_region(HPID, size);
     if (iRet < 0) {
-        printf("error: p_get_small_region\n");
+        printf("Error:p_get_small_region call failed!\n");
         return -1;
     }
 
-    pBaseAddr = p_mmap(NULL, SHM_SIZE, PROT_READ | PROT_WRITE, HPID);
+    pBaseAddr = p_mmap(NULL, size, PROT_READ | PROT_WRITE, HPID);
     if (!pBaseAddr) {
-        printf("p_mmap return NULL\n");
+        printf("p_mmap return NULL!\n"); // No sense
+        return -1;
     }
 
-    int *magic_ptr = (int *)pBaseAddr;
+    /* If this pre-allocated native heap is not in use, clear it with setting all the memory bytes to be 0s */
+    int *startLoc = (int *)pBaseAddr;
     pBaseAddr += 4;
-
-    if (*magic_ptr != PCM_MAGIC) {
-        *magic_ptr = PCM_MAGIC;
-        p_clear();
+    if (*startLoc != 4 || *(startLoc + 1) < 0 || *(startLoc + 1) > size-4*sizeof(int)) {
+        *startLoc = 4;
+        p_clear(size);
     }
-    
-    printf("pBaseAddr = %p\n", pBaseAddr);
 
-    return 0;
+    // printf("pBaseAddr = %p.\n", pBaseAddr);
 }
 
 void *p_get_base()
@@ -111,165 +105,150 @@ void *p_get_base()
 }
 
 int p_clear() {
-    if (pBaseAddr == NULL) {
-        printf("error: call p_init first\n");
+    if (!pBaseAddr) {
+        printf("Error: call p_init() first!\n");
         return -1;
     }
-
-    memset(pBaseAddr, 0, SHM_SIZE/(1 + BITMAPGRAN*8));
-
+    // set all the bytes to be 0s in this heap
+    memset(pBaseAddr+4, 0, SHM_SIZE-4);
+    /* Set the first contiguous free chunk */
+    *(int *)pBaseAddr = 0; // id = 0, free chunk
+    *((int *)pBaseAddr + 1) = SHM_SIZE - 4 * sizeof(int); // length = size - (sizeof(startLoc) + sizeof(nid) + sizeof(length) + sizeof(nextLoc)
+    *((int *)pBaseAddr + 2) = 0; // a flag for stop searching
     return 0;
-}
+} 
 
-static int next_bit = 0;
-
-void* p_malloc(int size) {
-    if (size < 0) {
-        printf("error: p_malloc, size must be greater than 0");
+/* 2018-08-07: a new p_malloc implementation without bitmap but pid as input parameter */
+void *p_malloc(int pid, int size) {
+    if (!pBaseAddr) {
+        printf("Error: call p_init first!\n");
         return NULL;
     }
-
-    if (pBaseAddr == NULL) {
-        printf("error: call p_init first\n");
-        return NULL;
-    }
-
-    // save size info
-    size += 4;
-
-    char curChar;
-    unsigned char mask;
     
-    enum {
-        STOP = 0,
-        LOOKING
-    } state;
+    void *pLeapAddr = pBaseAddr;
+    int nid, length;
+    int nextLoc = 1;
+    int toAllocateSize = size + 3 * sizeof(int);
 
-    state = STOP;
-    int iStartBit = 0;
-    int *ptrSize = NULL;
+    /* First fit for allocation in user heap */
+    while (nextLoc != 0) {
+        nid = *(int *)pLeapAddr; // nid = 0 means free
+        length = *((int *)pLeapAddr + 1); // length is the size of free/used chunk
+        nextLoc = *((int *)pLeapAddr + 2); // the offset of next starting address for free/used chunk 
+        // nosense = *((int *)pLeapAddr + 3); // need it or not?
 
-    int n, i;
-    int ag = 1;
-    for (i=0; i<iBitsCount; i++) {
-        n = next_bit + i;
-        if (n >= iBitsCount && ag) {
-            state = STOP;
-            next_bit = 0;
-            n = -1;
-            ag = 0;
-            continue;
+        /* find a free chunk with enough space */
+        if (nid == 0 && length >= toAllocateSize) {
+            // 
+            printf("Find a free chunk with enough space %d bytes for applied size %d.\n", length, size);
+            /* set important metada for current and next chunk */
+            /* For current chunk */
+            *(int *)pLeapAddr = pid;
+            *((int *)pLeapAddr + 1) = size;
+            *((int *)pLeapAddr + 2) = toAllocateSize;
+            /* For next chunk */
+            void *pNextAddr = pLeapAddr + toAllocateSize;
+            *(int *)pNextAddr = 0; // free chunk
+            *((int *)pNextAddr + 1) = length - toAllocateSize; // 
+            *((int *)pNextAddr + 2) = 0; // stop flag for search
+
+
+            /* return the used address for users */
+            return (pLeapAddr + 3 * sizeof(int));
         }
 
-        mask = 1 << (7 - n%8);
-        if (!(pBaseAddr[n/8] & mask)) {
-            // nth bit is empty
-
-            switch (state) {
-                case STOP:
-                    iStartBit = n;
-                    state = LOOKING;
-                case LOOKING:
-                    if ((n - iStartBit + 1) * BITMAPGRAN >= size) {
-                        // we find it 
-                        // printf("we find it, ready to set bit\n"); 
-                        set_bit_to_one(iStartBit, n);
-                        ptrSize = (int *)(pBaseAddr + SHM_SIZE/(1 + BITMAPGRAN*8) + iStartBit * BITMAPGRAN);
-                        *ptrSize = size;
-			next_bit = n + 1;
-
-                        return (void *)(pBaseAddr + SHM_SIZE/(1 + BITMAPGRAN*8) + iStartBit * BITMAPGRAN + 4); 
-                    }
-
-                    break;
-                default:
-                    break;
-            }
-        } else {
-            // nth bit is not empty
-            switch (state) {
-                case LOOKING:
-                    state = STOP;
-                    break;
-                default:
-                    break;
-            }
-        }
+        /* if in this round a free chunk not found or size not satisfied, continue */
+        pLeapAddr += 3 * sizeof(int) + length;
     }
 
+    /* nextLoc == 0 but no free chunk satisifies the applied space */
+    printf("No free memory, please p_init a larger space or clear the heap memory instead.\n");
     return NULL;
 }
 
-void set_bit_to_one(int iStartBit, int iEnd) {
-    unsigned char mask;
-    //printf("in set_bit_to_one, %d, %d", iStartBit, iEnd);
-    int n;
-    for (n=iStartBit; n<=iEnd; n++) {
-        mask = 1 << (7 - n%8);
-        pBaseAddr[n/8] |= mask;
 
-        //printf("mask=%d,after set: %d\n", mask,pBaseAddr[n/8]&mask);
+/* p_free is corresponding to p_malloc */
+int p_free(int pid) {
+    if (!pBaseAddr) {
+        printf("Error: call p_init first!\n");
+        return -1;
     }
-}
+    void *pLeapAddr = pBaseAddr;
 
-int p_free(void *addr) {
-    if (!addr) {
-        printf("invalid arguments\n");
+    int nid, length, nosense;
+    int nextLoc = 1;
+    while (nextLoc != 0) {
+        nid = *(int *)pLeapAddr; // nid = 0 means free
+        length = *((int *)pLeapAddr + 1); // length is the size corresponding to p_malloc
+        nextLoc = *((int *)pLeapAddr + 2); // the offset of next starting address for free/used chunk 
+        // nosense = *((int *)pLeapAddr + 3); // need it or not?
+
+        if (nid == pid) {
+            printf("Find id %d in the heap.\n", pid);
+	    /* clear this region by setting all bytes to be 0s */
+            memset(pLeapAddr + 3*sizeof(int), 0, length);
+            *(int *)pLeapAddr = 0; // pid = 0, free chunk; no need to change length
+
+            // TODO: recycle contigous free memory in PM
+            void *pNextAddr = pLeapAddr + nextLoc;
+            if (*(int *)pNextAddr == 0) {
+                *((int *)pLeapAddr + 1) = length + 3 * sizeof(int) + *((int *)pNextAddr + 1); // length update
+                *((int *)pLeapAddr + 2) = *((int *)pNextAddr + 2); // nextLoc update
+
+                *(int *)pNextAddr = *((int *)pNextAddr + 1) = *((int *)pNextAddr + 2) = 0;
+            }
+            // continue; // Delete all data with the same pid
+            return 0;
+        }
+
+        pLeapAddr += (length + 3 * sizeof(int));
+    }
+
+    /* reach the end of the allocated memory region and pid not found */
+    if (nextLoc == 0) {
+        printf("Cannot find pid %d in native heap.\n", pid);
         return -1;
     }
 
-    if (addr < pBaseAddr + SHM_SIZE/(1 + BITMAPGRAN*8) || addr > pBaseAddr + SHM_SIZE - 1) {
-        printf("addr out of range\n"); 
-        return -1;
-    }
-    
-    int *ptrSize = (int *)(addr - 4);
-    int size = *ptrSize;
-    addr = addr - 4;
-
-    int nth = ((char*)addr - pBaseAddr - SHM_SIZE/(1 + BITMAPGRAN*8)) / (BITMAPGRAN);
-    unsigned char mask;
-    int n;
-    size = (size + BITMAPGRAN - 1)/ BITMAPGRAN;
-
-    for (n=nth ; n<nth+size; n++) {
-        mask = 1 << (7 - n%8);
-        pBaseAddr[n/8] &= ~mask;
-    }
-
-    return 0;
+    printf("Unknown type of error occured!\n");
+    return -1;
 }
 
-void *p_new(int pId, int iSize) {
-    /*
-    if (iSize < 4096) {
+char *p_get_malloc(int pid) {
+    if (!pBaseAddr) {
+        printf("Error: call p_init first!\n");
         return NULL;
     }
-    */
+    char *pLeapAddr = (char *)pBaseAddr;
 
-    int iRet = 0;
+    int nid, length, nosense;
+    int nextLoc = 1;
+    while (nextLoc != 0) {
+        nid = *(int *)pLeapAddr; // nid = 0 means free
+        length = *((int *)pLeapAddr + 1); // length is the size corresponding to p_malloc
+        nextLoc = *((int *)pLeapAddr + 2); // the offset of next starting address for free/used chunk 
+        // nosense = *((int *)pLeapAddr + 3); // need it or not?
 
-    iRet = p_search_big_region_node(pId);
-    printf("return from p_search_big_region_node: %d\n", iRet);
-    if (iRet) {
-        printf("id %d already exist\n", pId);
-        //return NULL;
+        if (nid == pid) {
+            printf("Find id %d in the heap.\n", pid);
+            return (char*)(pLeapAddr + 3 * sizeof(int));
+        }
+        /* If not found in this round */
+        pLeapAddr += (length + 3 * sizeof(int));
     }
 
-    iRet = p_alloc_and_insert(pId, iSize);
-    printf("return from p_alloc_and_insert: %d\n", (int)iRet);
-    if (iRet != 0) {
-        printf("error: p_alloc_and_insert\n");
-        //return NULL;
+    /* reach the end of the allocated memory region and pid not found */
+    if (nextLoc == 0) {
+        printf("Cannot find pid %d in native heap.\n", pid);
+        return NULL;
     }
 
-    void *pAddr = p_mmap(NULL, iSize, PROT_READ | PROT_WRITE, pId);
-    if (!pAddr) {
-        printf("p_mmap return NULL\n");
-    }
-
-    return pAddr;
+    printf("Unknown type of error occured!\n");
+    return NULL;
 }
+
+
+
 
 int p_delete(int pId) {
     /*
