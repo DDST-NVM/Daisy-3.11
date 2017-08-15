@@ -202,13 +202,13 @@ void* p_malloc(int size) {
 
 void set_bit_to_one(int iStartBit, int iEnd) {
     unsigned char mask;
-    //printf("in set_bit_to_one, %d, %d", iStartBit, iEnd);
+    printf("in set_bit_to_one, %d, %d", iStartBit, iEnd);
     int n;
     for (n=iStartBit; n<=iEnd; n++) {
         mask = 1 << (7 - n%8);
         pBaseAddr[n/8] |= mask;
 
-        //printf("mask=%d,after set: %d\n", mask,pBaseAddr[n/8]&mask);
+        printf("mask=%d,after set: %d\n", mask,pBaseAddr[n/8]&mask);
     }
 }
 
