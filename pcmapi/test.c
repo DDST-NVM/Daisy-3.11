@@ -7,9 +7,9 @@
 * How to run for test:
 * ./ptest p (init a large memory chunk for further memory allocation)
 * ./ptest gba (get base address of allocated heap memory)
-* ./ptest m 10 (malloc 10 integer memory)
+* ./ptest m (malloc 10 integer memory)
 * ./ptest gm (get malloc data of specified id)
-* ./ptest f (free any region of specified id)
+* ./ptest f id (free any region of specified id)
 * ./ptest n (alloc and write a large chunk of memory on scm)
 * ./ptest d (delete the large memory chunk allocated by p_new)
 * ./ptest gn (re-map and read a large chunk of memory with p_new)
@@ -243,7 +243,6 @@ int main(int argc, char **argv) {
         printf("-----------------------------------------------------------\n\n");
     }
     else {
-        printf("\n-----------------------------------------------------------\n");
         printf("Test begins / ends!\n");
         printf("-----------------------------------------------------------\n\n");
     }
